@@ -130,7 +130,7 @@ class DataLoader:
             area_m2              : float    Footprint area
             estimated_storeys    : int?     Derived from height_m / 3.0
             use_hint             : str      'residential' | 'commercial' |
-                                            'mixed' | 'industrial' | 'unknown'
+                                            'mixed' | 'industrial' | 'accessory' | 'unknown'
             attrs                : dict     Source-specific extra attributes
 
         Returns:
@@ -217,6 +217,148 @@ class DataLoader:
         """
         ...
 
+    def sectors(self) -> gpd.GeoDataFrame:
+        """Statistical sectors with population data.
+
+        Statbel statistical sectors are the finest-grained demographic units
+        in Belgium. Population data from Statbel is joined to sector polygons.
+
+        Note: Sectors are kept as whole polygons (not clipped to AOI) since
+        they are statistical units. Some sectors may extend beyond the
+        neighbourhood boundary.
+
+        Columns (EPSG:31370):
+            id                   : str     Stable internal UUID
+            source_id            : str     Sector code (CD_SECTOR)
+            geometry             : Polygon Sector boundary
+            name_nl              : str?    Dutch name
+            name_fr              : str?    French name
+            municipality_nis     : str?    Municipality NIS code
+            area_m2              : float   Official sector area
+            population           : int?    Total population (from Statbel)
+            pop_density_per_km2  : float?  Population per km²
+
+        Returns:
+            GeoDataFrame, EPSG:31370.
+        """
+        ...
+
+    def canopy_chm(self) -> tuple[np.ndarray, Affine, int]:
+        """Canopy Height Model (nDSM with buildings masked out).
+
+        Derived from nDSM by masking building footprints. Shows above-ground
+        vegetation heights. Buildings appear as nodata.
+
+        Temporal note: Based on DHM-II (2013-2015). Trees planted since then
+        are missing; trees removed since then appear as phantom canopy.
+
+        Returns:
+            Tuple of (array, transform, crs_epsg).
+            - array: 2D numpy float32, shape (H, W). Height in metres.
+                    Buildings and nodata areas are -9999.
+            - transform: rasterio Affine transform.
+            - crs_epsg: 31370.
+        """
+        ...
+
+    def canopy_polygons(self) -> gpd.GeoDataFrame:
+        """Canopy coverage polygons derived from LiDAR.
+
+        Includes ALL above-ground vegetation > 2.5m height, not just
+        municipal trees. Covers private gardens, parks, unmapped street
+        trees, and tall hedges.
+
+        For municipal tree inventory (point data with species info), use
+        the trees() method instead.
+
+        Columns (EPSG:31370):
+            id             : str     Stable internal UUID
+            geometry       : Polygon Canopy footprint
+            area_m2        : float   Polygon area
+            mean_height_m  : float?  Mean canopy height within polygon
+            max_height_m   : float?  Max canopy height within polygon
+
+        Returns:
+            GeoDataFrame, EPSG:31370.
+        """
+        ...
+
+    def vegetation(self) -> gpd.GeoDataFrame:
+        """Vegetation polygons from NDVI (2021 summer orthophoto).
+
+        All green vegetation detected from Color-Infrared imagery using NDVI
+        thresholding. Uses 2021 orthophoto to avoid temporal mismatch with
+        outdated DHM-II LiDAR (2013-2015).
+
+        Coverage: All vegetation with NDVI >= 0.05, including:
+            - Trees (all sizes, including recent plantings)
+            - Shrubs and hedges
+            - Gardens and green spaces
+            - Excludes: grass lawns (low NDVI), bare soil, buildings
+
+        Note: For height-filtered tree canopy only, use canopy_polygons()
+        (based on nDSM). That dataset may miss trees planted after 2015.
+
+        Columns (EPSG:31370):
+            id             : str     Stable internal UUID
+            geometry       : Polygon Vegetation footprint
+            area_m2        : float   Polygon area
+            mean_height_m  : float?  Mean height (from nDSM, may be outdated)
+            max_height_m   : float?  Max height (from nDSM, may be outdated)
+
+        Returns:
+            GeoDataFrame, EPSG:31370.
+        """
+        ...
+
+    def addresses(self) -> gpd.GeoDataFrame:
+        """Address points from Adressenregister.
+
+        Each address is a geocoded point with street name and municipality.
+        Useful for address-based geocoding or joining external datasets.
+
+        Columns (EPSG:31370):
+            id             : str     Stable internal UUID
+            source_id      : str     Adressenregister object ID
+            geometry       : Point   Address location
+            full_address   : str     Complete address string
+            street_name    : str     Street name
+            house_number   : str?    House number (may be null)
+            municipality   : str     Municipality name
+            building_id    : str?    Nearest building ID (if joined)
+
+        Returns:
+            GeoDataFrame, EPSG:31370.
+        """
+        ...
+
+    def bwk(self) -> gpd.GeoDataFrame:
+        """BWK (Biological Valuation Map) habitat polygons.
+
+        The Biologische Waarderingskaart classifies all land into biotope
+        categories with ecological valuation scores. Wall-to-wall coverage
+        of Flanders.
+
+        Note: Update cycles are multi-year; urban areas may be 5-10 years
+        out of date. For current vegetation, supplement with vegetation()
+        from NDVI or canopy_polygons() from LiDAR.
+
+        Columns (EPSG:31370):
+            id              : str     Stable internal UUID
+            source_id       : str     BWK OIDN
+            geometry        : Polygon Biotope polygon
+            primary_biotope : str?    Primary biotope code (e.g., 'ha', 'sf')
+            classification  : str?    TAG classification
+            valuation       : str     Ecological value: 'very_valuable' |
+                                      'valuable' | 'less_valuable' | 'mixed' |
+                                      'unknown'
+            area_m2         : float   Polygon area
+
+        Returns:
+            GeoDataFrame, EPSG:31370.
+        """
+        ...
+
     # ----------------- future extensions -----------------
     # When adding new datasets, follow the same pattern:
     #   - method named for the domain concept
@@ -227,7 +369,5 @@ class DataLoader:
     #
     # Planned additions (not implemented yet):
     #   - land_use()       : Landgebruikskaart polygons
-    #   - statistical_sectors() : Statbel polygons for the neighbourhood
-    #   - population()     : Statbel population counts per sector
     #   - flood_hazard()   : Overstromingsgevoelige gebieden
     #   - noise_baseline() : Strategic noise map values at building facades

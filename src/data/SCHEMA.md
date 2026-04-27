@@ -39,7 +39,7 @@ This document describes the canonical schema that the data layer (`DataLoader`) 
 | `roof_type`         | `str?`      | —    | `flat`, `pitched`, `mixed`, or `null` (where not classifiable).            |
 | `area_m2`           | `float`     | m²   | Footprint area. Computed at cleaning time; always non-null.                |
 | `estimated_storeys` | `int?`      | —    | Floor count estimated as `height_m / 3.0`, rounded. Null if height is null.|
-| `use_hint`          | `str`       | —    | Heuristic use: `residential`, `commercial`, `mixed`, `industrial`, `unknown`. Defaults to `unknown` in v0. |
+| `use_hint`          | `str`       | —    | Heuristic use: `residential`, `commercial`, `mixed`, `industrial`, `accessory`, `unknown`. See below. |
 | `attrs`             | `dict`      | —    | JSON blob of source-specific attributes not promoted to columns.           |
 
 ### Field notes
@@ -54,10 +54,14 @@ This document describes the canonical schema that the data layer (`DataLoader`) 
 
 **`roof_type`** comes from GRB 3D LOD2 classification where available. Approximate for irregular roofs; reliable for simple gabled and flat roofs.
 
-**`use_hint`** is not populated in v0 from GRB alone. Future versions will join:
-- CRAB/Adressenregister address density → residential signal
-- OSM building tags → fallback
-- Municipal building-use datasets where available
+**`use_hint`** is classified using address join and building size heuristics:
+- `residential`: Building has address(es) and area ≥ 50m²
+- `accessory`: No address and area < 50m² (sheds, garages, outbuildings)
+- `industrial`: No address and area > 200m² (warehouses, utility buildings)
+- `unknown`: No address and 50-200m² (ambiguous cases)
+- `commercial`, `mixed`: Not yet populated (future: OSM tags, municipal datasets)
+
+This is a heuristic classification with known limitations. Buildings without addresses in the 50-200m² range could be attached annexes, workshops, or commercial buildings. For defensible land-use analysis, supplement with OSM building tags or municipal zoning data.
 
 ### Typical queries
 
@@ -207,6 +211,260 @@ buildings:
   reviewed_at: "2026-04-20"     # when promoted cleaned → reviewed
   reviewer: "John"
   notes: "Spot-checked against cadastre; heights look sensible."
+```
+
+---
+
+## Statistical Sectors
+
+**Method:** `loader.sectors() -> gpd.GeoDataFrame`
+
+**Source:** Statbel statistical sectors (catalogue id `statbel_sectors`) with population data joined from Statbel population-by-sector.
+
+**Coverage:** All sectors intersecting the AOI. Sectors are kept as whole polygons (not clipped) since they are statistical units.
+
+**Known gaps:**
+- Population data is an annual snapshot — no intra-year updates
+- Sector boundaries change periodically (REDEGEO reform in 2025)
+- Area and population for sectors extending beyond AOI reflects full sector, not clipped portion
+
+### Columns
+
+| Column               | Type      | Unit   | Description                                           |
+|----------------------|-----------|--------|-------------------------------------------------------|
+| `id`                 | `str`     | —      | Stable internal UUID.                                 |
+| `source_id`          | `str`     | —      | Sector code (CD_SECTOR).                              |
+| `geometry`           | `Polygon` | —      | Sector boundary in EPSG:31370.                        |
+| `name_nl`            | `str?`    | —      | Dutch name. Nullable.                                 |
+| `name_fr`            | `str?`    | —      | French name. Nullable.                                |
+| `municipality_nis`   | `str?`    | —      | Municipality NIS code.                                |
+| `area_m2`            | `float`   | m²     | Official sector area.                                 |
+| `population`         | `int?`    | —      | Total population (from Statbel). Nullable.            |
+| `pop_density_per_km2`| `float?`  | /km²   | Population density. Nullable.                         |
+
+### Field notes
+
+**`population`** is the total headcount from the Statbel annual snapshot. Does not include age/gender breakdown (available in separate Statbel tables).
+
+**`pop_density_per_km2`** is computed as `population / area_m2 * 1,000,000`. Useful for comparing sectors of different sizes.
+
+---
+
+## Canopy (LiDAR-derived)
+
+**Methods:**
+- `loader.canopy_chm() -> (array, transform, epsg)` — raster
+- `loader.canopy_polygons() -> gpd.GeoDataFrame` — vector
+
+**Source:** Derived from DHM-II nDSM by masking building footprints. Buildings from GRB.
+
+**Coverage:** Full neighbourhood AOI. Captures ALL vegetation including private gardens, not just municipal trees.
+
+**Known limitations:**
+- **Temporal mismatch**: DHM-II was captured 2013-2015. Trees planted since then are missing; trees removed since then appear as phantom canopy.
+- **Tall hedges** (>2.5m) are included as canopy — they provide similar shading.
+- **Green roofs** are excluded (masked with building footprints).
+- At 1m resolution, individual tree trunks are not resolved.
+
+### Canopy Height Model (Raster)
+
+**Method:** `loader.canopy_chm() -> (array, transform, epsg)`
+
+Returns a 3-tuple: `(array, transform, crs_epsg)`.
+
+- **`array`**: 2D `numpy.ndarray`, dtype `float32`, shape `(H, W)`. Above-ground vegetation height in metres. Buildings and nodata areas are `-9999`.
+- **`transform`**: `rasterio.Affine` transform mapping array indices to EPSG:31370 coordinates.
+- **`crs_epsg`**: `31370` (always).
+
+### Canopy Polygons (Vector)
+
+**Method:** `loader.canopy_polygons() -> gpd.GeoDataFrame`
+
+| Column          | Type      | Unit | Description                                    |
+|-----------------|-----------|------|------------------------------------------------|
+| `id`            | `str`     | —    | Stable internal UUID.                          |
+| `geometry`      | `Polygon` | —    | Canopy footprint in EPSG:31370.                |
+| `area_m2`       | `float`   | m²   | Polygon area.                                  |
+| `mean_height_m` | `float?`  | m    | Mean vegetation height within polygon.         |
+| `max_height_m`  | `float?`  | m    | Maximum vegetation height within polygon.      |
+
+### Derivation parameters (for reproducibility)
+
+- **Height threshold**: 2.5m (vegetation must exceed this to be counted)
+- **Building buffer**: 1.0m (buildings buffered before masking to avoid edge effects)
+- **Minimum polygon area**: 4.0 m² (smaller fragments filtered as noise)
+- **Morphological cleanup**: Opening (2px kernel) + closing (3px kernel)
+
+### Typical queries
+
+```python
+# Total canopy coverage in neighbourhood
+total_ha = canopy_polygons["area_m2"].sum() / 10000
+
+# Large canopy patches (mature stands)
+large = canopy_polygons[canopy_polygons["area_m2"] > 100]
+
+# Tall trees
+tall = canopy_polygons[canopy_polygons["max_height_m"] > 20]
+```
+
+---
+
+## Vegetation (NDVI-derived)
+
+**Method:** `loader.vegetation() -> gpd.GeoDataFrame`
+
+**Source:** NDVI thresholding on 2021 summer CIR orthophoto (40cm resolution).
+
+**Coverage:** All green vegetation in the neighbourhood, including trees, shrubs, hedges, and gardens. Uses 2021 imagery to capture recent plantings that would be missing from the 2013-2015 LiDAR.
+
+**Pipeline:**
+1. Compute NDVI from CIR orthophoto bands (NIR, Red)
+2. Threshold: NDVI >= 0.05 (any green vegetation)
+3. Morphological cleanup: opening (1px) + closing (2px)
+4. Vectorize to polygons
+5. Filter: minimum area 2 m²
+6. Compute height stats from nDSM (for reference, may be outdated)
+
+**Trade-offs vs LiDAR-only (`canopy_polygons`):**
+- **More current**: uses 2021 imagery vs 2013-2015 LiDAR
+- **Better coverage**: captures recent plantings, small trees
+- **Includes more vegetation types**: not just tall trees
+- **No height filtering**: avoids DHM-II temporal mismatch
+
+**Methods evaluated (for reference):**
+- nDSM-only: 5.82 ha — misses trees planted after 2015
+- DeepForest ML: 1.07 ha — too restrictive, rectangular artifacts
+- NDVI + height fusion: temporal mismatch issues
+- **NDVI-only (chosen)**: 12.21 ha — best coverage with 2021 imagery
+
+**Known limitations:**
+- Height data (mean_height_m, max_height_m) is from DHM-II (2013-2015) — may be inaccurate for recent plantings
+- DHM-III expected 2028 — will enable accurate height filtering
+- Includes shrubs and hedges, not just trees
+
+### Columns
+
+| Column          | Type      | Unit | Description                                    |
+|-----------------|-----------|------|------------------------------------------------|
+| `id`            | `str`     | —    | Stable internal UUID.                          |
+| `geometry`      | `Polygon` | —    | Vegetation footprint in EPSG:31370.            |
+| `area_m2`       | `float`   | m²   | Polygon area.                                  |
+| `mean_height_m` | `float?`  | m    | Mean height (from nDSM, may be outdated).      |
+| `max_height_m`  | `float?`  | m    | Max height (from nDSM, may be outdated).       |
+
+### Derivation parameters
+
+- **NDVI threshold**: 0.05
+- **Height threshold**: none (temporal mismatch with DHM-II)
+- **Morphological cleanup**: opening 1px, closing 2px
+- **Minimum polygon area**: 2.0 m²
+
+### Typical queries
+
+```python
+# Total vegetation coverage
+total_ha = vegetation["area_m2"].sum() / 10000
+
+# Compare with tree inventory
+trees_buffered = trees.buffer(trees["estimated_crown_radius_m"]).area.sum() / 10000
+coverage_ratio = total_ha / trees_buffered  # > 1 indicates vegetation beyond inventory
+```
+
+---
+
+## Addresses
+
+**Method:** `loader.addresses() -> gpd.GeoDataFrame`
+
+**Source:** Adressenregister (Flemish address register) via WFS.
+
+**Coverage:** All addresses in the neighbourhood. Points clipped strictly to AOI.
+
+**Pipeline:**
+1. Fetch from Adressenregister WFS with bbox filter
+2. Clip to AOI
+3. Extract address fields
+4. Optionally join to nearest building
+
+### Columns
+
+| Column          | Type     | Unit | Description                                    |
+|-----------------|----------|------|------------------------------------------------|
+| `id`            | `str`    | —    | Stable internal UUID.                          |
+| `source_id`     | `str`    | —    | Adressenregister object ID.                    |
+| `geometry`      | `Point`  | —    | Address location in EPSG:31370.                |
+| `full_address`  | `str`    | —    | Complete address string.                       |
+| `street_name`   | `str`    | —    | Street name.                                   |
+| `house_number`  | `str?`   | —    | House number (may be null).                    |
+| `municipality`  | `str`    | —    | Municipality name.                             |
+| `building_id`   | `str?`   | —    | Nearest building ID (if joined).               |
+
+### Typical queries
+
+```python
+# Addresses per street
+addresses.groupby("street_name").size().sort_values(ascending=False)
+
+# Join addresses to buildings
+buildings_with_addresses = buildings.merge(
+    addresses.groupby("building_id").size().reset_index(name="n_addresses"),
+    left_on="id", right_on="building_id", how="left"
+)
+```
+
+---
+
+## BWK (Biological Valuation Map)
+
+**Method:** `loader.bwk() -> gpd.GeoDataFrame`
+
+**Source:** BWK (Biologische Waarderingskaart) from INBO via WFS.
+
+**Coverage:** Wall-to-wall habitat classification for Flanders. Clipped to AOI.
+
+**Note:** Update cycles are multi-year; urban areas may be 5-10 years out of date.
+For current vegetation, supplement with `vegetation()` from NDVI or `canopy_polygons()` from LiDAR.
+
+### Columns
+
+| Column           | Type      | Unit | Description                                    |
+|------------------|-----------|------|------------------------------------------------|
+| `id`             | `str`     | —    | Stable internal UUID.                          |
+| `source_id`      | `str`     | —    | BWK OIDN.                                      |
+| `geometry`       | `Polygon` | —    | Biotope polygon in EPSG:31370.                 |
+| `primary_biotope`| `str?`    | —    | Primary biotope code (e.g., 'ha', 'sf').       |
+| `classification` | `str?`    | —    | TAG classification.                            |
+| `valuation`      | `str`     | —    | Ecological value: see below.                  |
+| `area_m2`        | `float`   | m²   | Polygon area.                                  |
+
+### Valuation values
+
+- `very_valuable` — zeer waardevol
+- `valuable` — biologisch waardevol
+- `less_valuable` — minder waardevol
+- `mixed` — complex
+- `unknown` — no valuation
+
+### Biotope codes (common)
+
+- `ha` — lawn (gazon)
+- `hp` — pasture
+- `sf` — shrub
+- `kb` — artificial/urban
+- `kw` — industrial
+- `weg` — road
+- `spoor` — railway
+
+### Typical queries
+
+```python
+# Valuable habitat area
+valuable = bwk[bwk["valuation"].isin(["very_valuable", "valuable"])]
+valuable_ha = valuable["area_m2"].sum() / 10000
+
+# Biotope distribution
+bwk["primary_biotope"].value_counts()
 ```
 
 ---
