@@ -1,0 +1,33 @@
+# meta.yaml — template for a new neighbourhood
+#
+# Lives at: district-tool-data/<city>/<neighbourhood>/meta.yaml
+# Updated whenever a dataset is promoted from cleaned/ to reviewed/.
+#
+# Top-level keys are dataset names matching the DataLoader's method names
+# (buildings, roads, trees, terrain_dsm, terrain_dtm, etc.).
+
+# Example entries — copy and fill in.
+
+# buildings:
+#   source: grb_gebouwen
+#   source_version: "2026-04-15"
+#   ingested_at: "2026-04-18"
+#   cleaned_at: "2026-04-19"
+#   reviewed_at: "2026-04-20"
+#   reviewer: "John"
+#   notes: "Spot-checked against cadastre; heights look sensible."
+#   row_count: 1487
+#   cleaning_decisions:
+#     - "Dropped buildings <10m² (134 features)"
+#     - "Computed heights from DHM nDSM (median per footprint)"
+#     - "Initialised use_hint as 'unknown'"
+
+# terrain_dsm:
+#   source: dhm_vlaanderen_dsm
+#   source_version: "DHM-II 2014"
+#   ingested_at: "2026-04-17"
+#   cleaned_at: "2026-04-17"
+#   reviewed_at: "2026-04-18"
+#   reviewer: "John"
+#   notes: "Mosaicked from 4 source tiles; clipped to AOI + 200m buffer."
+#   resolution_m: 1.0
