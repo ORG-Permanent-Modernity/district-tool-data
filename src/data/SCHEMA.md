@@ -219,7 +219,10 @@ buildings:
 
 **Method:** `loader.sectors() -> gpd.GeoDataFrame`
 
-**Source:** Statbel statistical sectors (catalogue id `statbel_sectors`) with population data joined from Statbel population-by-sector.
+**Source:** Statbel statistical sectors (catalogue id `statbel_sectors`) enriched with demographic data from:
+- Income statistics (2023)
+- Car ownership (2022)
+- Census 2021 (age/sex distribution, dwelling types)
 
 **Coverage:** All sectors intersecting the AOI. Sectors are kept as whole polygons (not clipped) since they are statistical units.
 
@@ -227,8 +230,11 @@ buildings:
 - Population data is an annual snapshot — no intra-year updates
 - Sector boundaries change periodically (REDEGEO reform in 2025)
 - Area and population for sectors extending beyond AOI reflects full sector, not clipped portion
+- **Employment, education, household composition** NOT available at sector level (privacy constraints)
 
 ### Columns
+
+#### Base sector attributes
 
 | Column               | Type      | Unit   | Description                                           |
 |----------------------|-----------|--------|-------------------------------------------------------|
@@ -239,14 +245,60 @@ buildings:
 | `name_fr`            | `str?`    | —      | French name. Nullable.                                |
 | `municipality_nis`   | `str?`    | —      | Municipality NIS code.                                |
 | `area_m2`            | `float`   | m²     | Official sector area.                                 |
-| `population`         | `int?`    | —      | Total population (from Statbel). Nullable.            |
+| `population`         | `int?`    | —      | Total population (2024). Nullable.                    |
 | `pop_density_per_km2`| `float?`  | /km²   | Population density. Nullable.                         |
+
+#### Income (2023)
+
+| Column                  | Type      | Unit | Description                                           |
+|-------------------------|-----------|------|-------------------------------------------------------|
+| `income_median_eur`     | `float?`  | €    | Median net taxable income. Nullable (privacy).        |
+| `income_mean_eur`       | `float?`  | €    | Mean net taxable income. Nullable (privacy).          |
+| `income_declarations`   | `int?`    | —    | Number of income declarations. Nullable.              |
+
+#### Car ownership (2022)
+
+| Column                  | Type      | Unit | Description                                           |
+|-------------------------|-----------|------|-------------------------------------------------------|
+| `households_total`      | `int?`    | —    | Total households. Nullable.                           |
+| `cars_total`            | `int?`    | —    | Total cars. Nullable.                                 |
+| `cars_per_household`    | `float?`  | —    | Cars per household ratio. Nullable.                   |
+
+#### Age distribution (Census 2021)
+
+Population by age group and sex. Age groups are 5-year bands (0-4, 5-9, ..., 95-99, 100+).
+
+**Column naming:** `pop_{age_group}_{sex}` where:
+- `age_group`: `0_4`, `5_9`, `10_14`, ..., `95_99`, `100plus`
+- `sex`: `m` (male), `f` (female), `total` (male + female)
+
+Examples:
+- `pop_0_4_m`: Males aged 0-4
+- `pop_25_29_f`: Females aged 25-29
+- `pop_65_69_total`: Total population aged 65-69
+
+Total: 63 age/sex columns (21 age groups × 3).
+
+#### Dwellings (Census 2021)
+
+| Column                     | Type      | Unit | Description                                        |
+|----------------------------|-----------|------|----------------------------------------------------|
+| `dwellings_conventional`   | `int?`    | —    | Occupied conventional dwellings. Nullable.         |
+| `dwellings_collective`     | `int?`    | —    | Collective housing (dorms, nursing homes). Nullable.|
+| `dwellings_other`          | `int?`    | —    | Other dwelling types. Nullable.                    |
+| `dwellings_total`          | `int?`    | —    | Total dwellings. Nullable.                         |
 
 ### Field notes
 
-**`population`** is the total headcount from the Statbel annual snapshot. Does not include age/gender breakdown (available in separate Statbel tables).
+**`population`** is the total headcount from the Statbel 2024 snapshot. Age distribution is from Census 2021 (3-year lag).
 
-**`pop_density_per_km2`** is computed as `population / area_m2 * 1,000,000`. Useful for comparing sectors of different sizes.
+**`income_*`** columns may be null for sectors with few taxpayers (privacy suppression).
+
+**`cars_per_household`** is computed as `cars_total / households_total`. Range in Haringrode: 0.38 - 0.89 cars/household.
+
+**Age distribution** is from Census 2021 and may not reflect 2024 population structure (migration, aging). Use for general demographic analysis, not precise population modeling.
+
+**Temporal mismatch:** Income (2023), Cars (2022), Census (2021), base population (2024). Acceptable for exploratory analysis.
 
 ---
 
